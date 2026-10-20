@@ -470,7 +470,10 @@ async def add_to_shopping_list(recipe_ids: str) -> str:
         if custom:
             items += await _cookidoo_api.add_ingredient_items_for_custom_recipes(custom)
         lines = [f"Added {len(items)} ingredient(s) to the shopping list:"]
-        lines += [f"  - {item.description} {item.name}".rstrip() for item in items]
+        lines += [
+            "  - " + " ".join(part for part in (item.description, item.name) if part)
+            for item in items
+        ]
         return "\n".join(lines)
 
     except Exception as e:
