@@ -1,29 +1,59 @@
 # Cookidoo MCP Server
 
-Let an AI assistant (Claude Desktop, Claude Code or any other MCP client) write Thermomix recipes and
-save them straight into your [Cookidoo](https://cookidoo.de) account. These are real Cookidoo recipes
-with guided cooking: the Thermomix settings are filled in, and ingredients mentioned in a step are
-linked. You don't have to fix anything by hand in the Cookidoo editor.
+**Your Thermomix kitchen, run by your AI assistant.** Turn any recipe idea or web recipe into a
+real Cookidoo recipe with guided cooking, find the right dish in the Cookidoo catalogue, plan your
+week and fill your shopping list, all by just asking Claude (or any other MCP client).
+
+> "Turn this curry from my favourite food blog into a Thermomix recipe for my TM6."
+>
+> "Find three vegetarian dinners under 30 minutes, plan them for Monday to Wednesday and put the
+> ingredients on my shopping list."
+>
+> "Add the missing Thermomix settings to my bread recipe and knead the dough in dough mode."
+
+**Why you'll like it:**
+
+- **Recipes that cook themselves.** Uploaded recipes are not just text: every step comes with real
+  Thermomix settings. Tap the step and your Thermomix is set to the right time, temperature and
+  speed. Varoma, reverse and soft stir are included.
+- **Every mode Cookidoo knows.** Dough, turbo, blend, warm up and rice cooker, and on the TM7
+  steaming and browning too. The server reads the available modes live from Cookidoo, so it keeps
+  up when Cookidoo adds new ones.
+- **Ingredients linked like in the official editor.** Ingredients in a step become links, exactly
+  as if you had made the recipe in the Cookidoo editor by hand. No manual editing in Cookidoo is
+  needed.
+- **From idea to dinner plan.** Search the whole Cookidoo catalogue and your own recipes, plan them
+  in *Meine Woche* and send the ingredients to your Cookidoo shopping list.
+- **Checked before it is uploaded.** Every recipe is checked against the same rules the Cookidoo editor applies
+  before it is uploaded. Invalid temperatures, speeds or modes are explained instead of breaking
+  the upload.
+- **Made for the TM6 and the TM7.** Each recipe is built for your device and only uses what it can
+  do.
 
 > **Disclaimer:** This is an unofficial project. The developers are not affiliated with, endorsed by,
 > or connected to Cookidoo, Vorwerk, Thermomix, or any of their subsidiaries or trademarks.
 
 ## What it can do
 
+**Create your own recipes**
+
 | Feature | What you get |
 |---|---|
-| **Connect to Cookidoo** | Signs in to your account with the credentials from your `.env` file. |
+| **Upload your own recipe** | Creates a new recipe in "My recipes" (*Meine Rezepte*) on Cookidoo, for the TM6 or TM7. |
+| **Thermomix settings (guided cooking)** | Settings such as `3 Min./120°C/Stufe 1` in a step become real Thermomix settings. Tap the step and the Thermomix is set up. Works with time, temperature, Varoma, speed, reverse (*Linkslauf*) and soft stir (*Sanftrührstufe*). |
+| **Thermomix modes** | Dough, turbo, blend, warm up and rice cooker, and on the TM7 also steaming and browning (`Teig kneten/2 Min.`, `Turbo/1 Sek.` …), read live from Cookidoo. |
+| **Ingredient links** | When a step contains an ingredient line exactly as it appears in the ingredient list, it is shown as a link, as in recipes made with the Cookidoo editor. |
+| **Check before uploading** | Validates the recipe and shows which settings, modes and ingredient links were detected, with a clear reason for anything that does not fit. |
+| **Fix an uploaded recipe** | Replaces the steps of a recipe you already uploaded, for example to add Thermomix settings later. Ingredients, times and hints stay unchanged. |
+
+**Find, plan and shop**
+
+| Feature | What you get |
+|---|---|
 | **Find recipes** | Searches the Cookidoo catalogue (with filters such as ingredients to leave out, maximum time or device) and lists your own recipes. |
 | **Look at a recipe** | Shows ingredients, steps and times of a catalogue recipe or one of your own. |
 | **Plan your week** | Shows your Cookidoo week plan (*Meine Woche*), puts catalogue or own recipes on a day and removes them again. |
 | **Shopping list** | Adds the ingredients of recipes to your Cookidoo shopping list. |
-| **Check a recipe before uploading** | Validates name, ingredients, steps, servings and times and shows which Thermomix settings and ingredient links were detected. |
-| **Upload your own recipe** | Creates a new recipe in "My recipes" (*Meine Rezepte*) on Cookidoo. |
-| **Thermomix settings (guided cooking)** | Settings such as `3 Min./120°C/Stufe 1` in a step become real Thermomix settings. Tap the step and the Thermomix is set up. Works with time, temperature, Varoma, speed, reverse (*Linkslauf*) and soft stir (*Sanftrührstufe*). |
-| **Thermomix modes** | Dough, turbo, blend, warm up and rice cooker, and on the TM7 also steaming and browning (`Teig kneten/2 Min.`, `Turbo/1 Sek.` …). The server reads the available modes live from Cookidoo, so it follows when Cookidoo adds or removes one. |
-| **TM6 or TM7** | Each recipe is made for one device; the server only uses what that device can do. |
-| **Ingredient links** | When a step contains an ingredient line exactly as it appears in the ingredient list, it is shown as a link, as in recipes made with the Cookidoo editor. |
-| **Fix an uploaded recipe** | Replaces the steps of a recipe you already uploaded, for example to add Thermomix settings later. Ingredients, times and hints stay unchanged. |
 
 ## Setup
 
