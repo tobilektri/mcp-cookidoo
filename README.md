@@ -13,7 +13,10 @@ linked. You don't have to fix anything by hand in the Cookidoo editor.
 | Feature | What you get |
 |---|---|
 | **Connect to Cookidoo** | Signs in to your account with the credentials from your `.env` file. |
-| **Look at existing recipes** | Fetches ingredients, steps and times of a Cookidoo catalogue recipe (for inspiration). |
+| **Find recipes** | Searches the Cookidoo catalogue (with filters such as ingredients to leave out, maximum time or device) and lists your own recipes. |
+| **Look at a recipe** | Shows ingredients, steps and times of a catalogue recipe or one of your own. |
+| **Plan your week** | Shows your Cookidoo week plan (*Meine Woche*), puts catalogue or own recipes on a day and removes them again. |
+| **Shopping list** | Adds the ingredients of recipes to your Cookidoo shopping list. |
 | **Check a recipe before uploading** | Validates name, ingredients, steps, servings and times and shows which Thermomix settings and ingredient links were detected. |
 | **Upload your own recipe** | Creates a new recipe in "My recipes" (*Meine Rezepte*) on Cookidoo. |
 | **Thermomix settings (guided cooking)** | Settings such as `3 Min./120°C/Stufe 1` in a step become real Thermomix settings. Tap the step and the Thermomix is set up. Works with time, temperature, Varoma, speed, reverse (*Linkslauf*) and soft stir (*Sanftrührstufe*). |
@@ -165,13 +168,32 @@ The assistant then works through these tools:
 3. `generate_recipe_structure` checks the recipe and reports detected settings, modes and links.
 4. `upload_custom_recipe` saves it to your account and returns the recipe ID and link.
 
+### Planning the week
+
+You can also ask the assistant to find recipes and plan them, for example:
+
+```text
+Connect to Cookidoo. Find three quick vegetarian dinners (at most 30 minutes, for my TM6)
+in the Cookidoo catalogue or among my own recipes, show them to me and, after my OK, plan
+them for Monday to Wednesday next week and put their ingredients on my shopping list.
+```
+
+The assistant uses `search_recipes` and `list_my_recipes` to find recipes, `get_recipe_details`
+to look at them, and `plan_recipe`, `get_week_plan` and `add_to_shopping_list` to plan and shop.
+
 ### All tools
 
 | Tool | Purpose |
 |---|---|
 | `connect_to_cookidoo` | Sign in. Call this first. |
 | `get_thermomix_modes(device="TM6")` | List the modes Cookidoo offers right now for the TM6 or TM7, with spelling and allowed values. |
-| `get_recipe_details(recipe_id)` | Show a catalogue recipe, e.g. `r59322`. Does not work for your own recipes. |
+| `search_recipes(query, ingredients, exclude_ingredients, max_total_time, difficulty, portions, device, limit, page)` | Search the Cookidoo catalogue. All filters are optional; Cookidoo returns up to 20 results per page. |
+| `list_my_recipes()` | List your own recipes with ID, device and time. |
+| `get_recipe_details(recipe_id)` | Show ingredients, steps and times of a catalogue recipe (`r59322`) or one of your own (`01M5…`). Steps of own recipes are shown in the notation `update_custom_recipe_steps` accepts. |
+| `get_week_plan(day="")` | Show the recipes planned in the week starting at `day` (YYYY-MM-DD, default today). |
+| `plan_recipe(day, recipe_ids)` | Plan one or more recipes (comma-separated, catalogue and own mixed) on a day. |
+| `unplan_recipe(day, recipe_id)` | Remove a recipe from a day of the week plan. |
+| `add_to_shopping_list(recipe_ids)` | Add the ingredients of recipes to the Cookidoo shopping list. |
 | `generate_recipe_structure(name, ingredients, steps, servings, prep_time, total_time, hints, device="TM6")` | Validate a recipe and preview the detected settings, modes and links. |
 | `upload_custom_recipe(recipe_json)` | Create the recipe on Cookidoo (pass the JSON from `generate_recipe_structure`). |
 | `update_custom_recipe_steps(recipe_id, steps, ingredients="")` | Replace **all** steps of one of your recipes. The device is taken from the recipe. Without `ingredients`, the current ingredient list is loaded from Cookidoo. |
@@ -264,7 +286,7 @@ Run the tests for the settings, modes and link detection:
 
 ```bash
 pip install pytest
-pytest test_thermomix.py test_modes.py
+pytest test_thermomix.py test_modes.py test_recipes.py
 ```
 
 The files in `fixtures/` are the settings dialog of the Cookidoo editor (TM6 and TM7) and steps

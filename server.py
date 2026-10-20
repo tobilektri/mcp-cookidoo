@@ -9,6 +9,16 @@ from cookidoo_service import CookidooService, load_cookidoo_credentials
 from schemas import CustomRecipe
 from modes import BUILTIN_CATALOG, DEVICES, MODE_RULES, ModeCatalog
 from thermomix import format_time, build_instructions, check_steps, describe_instructions
+from recipes import (
+    format_catalog_recipe,
+    format_custom_recipe,
+    format_custom_recipes,
+    format_search_result,
+    format_week,
+    is_custom_recipe_id,
+    parse_day,
+    split_recipe_ids,
+)
 import json
 import re
 
@@ -232,75 +242,239 @@ async def get_thermomix_modes(device: str = "TM6") -> str:
 
 
 @mcp.tool()
-async def get_recipe_details(recipe_id: str) -> str:
+async def search_recipes(
+    query: str,
+    ingredients: str = "",
+    exclude_ingredients: str = "",
+    max_total_time: int = 0,
+    difficulty: str = "",
+    portions: int = 0,
+    device: str = "",
+    limit: int = 10,
+    page: int = 0,
+) -> str:
     """
-    Get detailed information about a specific recipe by its ID.
-    
-    Use this tool to get full details about a recipe for inspiration before creating
-    your own custom recipe. You must be connected first using connect_to_cookidoo.
-    
+    Search the Cookidoo recipe catalogue.
+
+    Returns names, IDs and links. Use get_recipe_details with an ID for ingredients and
+    steps, and plan_recipe to put a recipe into the week plan. Your own recipes are not
+    part of the catalogue; use list_my_recipes for them. You must be connected first
+    using connect_to_cookidoo.
+
     Args:
-        recipe_id: The Cookidoo recipe ID (e.g., "r59322", "r907015")
-        
+        query: Search words, e.g. "Kichererbsen Curry"
+        ingredients: Optional ingredients the recipe should contain, comma-separated
+        exclude_ingredients: Optional ingredients to leave out, comma-separated
+        max_total_time: Optional maximum total time in minutes (0 = any)
+        difficulty: Optional "easy", "medium" or "advanced"
+        portions: Optional number of portions (0 = any)
+        device: Optional Thermomix the recipe must be made for: "TM5", "TM6" or "TM7"
+        limit: How many results to show (default 10, at most 20 per page)
+        page: Result page, starting at 0
+
     Returns:
-        str: Detailed recipe information including ingredients, steps, cooking time, etc.
-        
-    Raises:
-        Exception: If not connected or if the recipe is not found
+        str: Matching recipes with name, ID and link
     """
-    global _cookidoo_api
-    
     try:
-        # Check if connected
         if not _cookidoo_api:
             return "Not connected. Please run 'connect_to_cookidoo' first."
-        
-        # Get recipe details
-        recipe = await _cookidoo_api.get_recipe_details(recipe_id)
-        
-        # Format the results
-        result = f"Recipe Details:\n\n"
-        result += f"Name: {recipe.name}\n"
-        result += f"ID: {recipe.id}\n\n"
-        
-        if hasattr(recipe, 'serving_size'):
-            result += f"Servings: {recipe.serving_size}\n"
-        
-        if hasattr(recipe, 'total_time'):
-            result += f"Total Time: {recipe.total_time} minutes\n"
-        
-        if hasattr(recipe, 'difficulty'):
-            result += f"Difficulty: {recipe.difficulty}\n"
-        
-        result += "\n"
-        
-        # Ingredients
-        if hasattr(recipe, 'ingredients') and recipe.ingredients:
-            result += "Ingredients:\n"
-            for ingredient in recipe.ingredients:
-                if hasattr(ingredient, 'name'):
-                    result += f"  • {ingredient.name}"
-                    if hasattr(ingredient, 'quantity') and ingredient.quantity:
-                        result += f" - {ingredient.quantity}"
-                    result += "\n"
-            result += "\n"
-        
-        # Steps
-        if hasattr(recipe, 'steps') and recipe.steps:
-            result += "Steps:\n"
-            for i, step in enumerate(recipe.steps, 1):
-                if hasattr(step, 'description'):
-                    result += f"{i}. {step.description}\n"
-            result += "\n"
-        
-        # URL if available
-        if hasattr(recipe, 'url') and recipe.url:
-            result += f"URL: {recipe.url}\n"
-        
-        return result
-        
+
+        def listed(text: str) -> list[str] | None:
+            values = [v.strip() for v in text.split(",") if v.strip()]
+            return values or None
+
+        result = await _cookidoo_api.search_recipes(
+            query.strip() or None,
+            ingredients=listed(ingredients),
+            exclude_ingredients=listed(exclude_ingredients),
+            total_time=max_total_time * 60 if max_total_time > 0 else None,
+            difficulty=difficulty.strip() or None,
+            portions=portions if portions > 0 else None,
+            tmv=device.strip().upper() or None,
+            page=page if page > 0 else None,
+        )
+        return format_search_result(result, max(1, limit), max(0, page))
+
+    except Exception as e:
+        return f"Search failed: {str(e)}"
+
+
+@mcp.tool()
+async def list_my_recipes() -> str:
+    """
+    List your own (created) Cookidoo recipes with name, ID, device and total time.
+
+    You must be connected first using connect_to_cookidoo.
+
+    Returns:
+        str: Your own recipes
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+        return format_custom_recipes(await _cookidoo_api.list_custom_recipes())
+
+    except Exception as e:
+        return f"Listing your recipes failed: {str(e)}"
+
+
+@mcp.tool()
+async def get_recipe_details(recipe_id: str) -> str:
+    """
+    Get ingredients, steps and times of a recipe by its ID.
+
+    Works for Cookidoo catalogue recipes (e.g. "r59322", from search_recipes) and for
+    your own recipes (e.g. "01M5A79NY53CEKEW6NKVYBFSTW", from list_my_recipes). Steps of
+    own recipes are shown in the notation update_custom_recipe_steps accepts. You must
+    be connected first using connect_to_cookidoo.
+
+    Args:
+        recipe_id: The Cookidoo recipe ID
+
+    Returns:
+        str: Recipe details including ingredients, steps and times
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+
+        recipe_id = recipe_id.strip()
+        if is_custom_recipe_id(recipe_id):
+            return format_custom_recipe(await _cookidoo_api.get_custom_recipe(recipe_id.upper()))
+        return format_catalog_recipe(await _cookidoo_api.get_recipe_details(recipe_id))
+
     except Exception as e:
         return f"Failed to get recipe details: {str(e)}"
+
+
+@mcp.tool()
+async def get_week_plan(day: str = "") -> str:
+    """
+    Show the recipes planned in your Cookidoo week plan ("Meine Woche").
+
+    You must be connected first using connect_to_cookidoo.
+
+    Args:
+        day: First day of the week to show, as YYYY-MM-DD (default: today)
+
+    Returns:
+        str: Planned recipes per day with name and ID
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+
+        start = parse_day(day)
+        days = await _cookidoo_api.get_recipes_in_calendar_week(
+            start, resolve_custom_recipes=True
+        )
+        return format_week(days, start)
+
+    except Exception as e:
+        return f"Loading the week plan failed: {str(e)}"
+
+
+@mcp.tool()
+async def plan_recipe(day: str, recipe_ids: str) -> str:
+    """
+    Put one or more recipes into your Cookidoo week plan on a given day.
+
+    Catalogue recipes ("r59322") and your own recipes ("01M5...") can be mixed. You
+    must be connected first using connect_to_cookidoo.
+
+    Args:
+        day: The day, as YYYY-MM-DD
+        recipe_ids: Recipe IDs, comma-separated
+
+    Returns:
+        str: The recipes now planned on that day
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+        if not day.strip():
+            return "Please give the day, as YYYY-MM-DD."
+
+        planned_day = parse_day(day)
+        catalog, custom = split_recipe_ids(recipe_ids)
+        if catalog:
+            await _cookidoo_api.add_recipes_to_calendar(planned_day, catalog)
+        if custom:
+            await _cookidoo_api.add_custom_recipes_to_calendar(planned_day, custom)
+
+        days = await _cookidoo_api.get_recipes_in_calendar_week(
+            planned_day, resolve_custom_recipes=True
+        )
+        days = [d for d in days if d.id == planned_day.isoformat()]
+        return (
+            f"Planned {len(catalog) + len(custom)} recipe(s) on {planned_day.isoformat()}.\n\n"
+            + format_week(days, planned_day)
+        )
+
+    except Exception as e:
+        return f"Planning failed: {str(e)}"
+
+
+@mcp.tool()
+async def unplan_recipe(day: str, recipe_id: str) -> str:
+    """
+    Remove a recipe from your Cookidoo week plan on a given day.
+
+    You must be connected first using connect_to_cookidoo.
+
+    Args:
+        day: The day, as YYYY-MM-DD
+        recipe_id: The recipe ID as shown by get_week_plan
+
+    Returns:
+        str: Confirmation
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+
+        planned_day = parse_day(day)
+        recipe_id = recipe_id.strip()
+        if is_custom_recipe_id(recipe_id):
+            await _cookidoo_api.remove_custom_recipe_from_calendar(planned_day, recipe_id.upper())
+        else:
+            await _cookidoo_api.remove_recipe_from_calendar(planned_day, recipe_id)
+        return f"Removed {recipe_id} from {planned_day.isoformat()}."
+
+    except Exception as e:
+        return f"Removing failed: {str(e)}"
+
+
+@mcp.tool()
+async def add_to_shopping_list(recipe_ids: str) -> str:
+    """
+    Add the ingredients of one or more recipes to your Cookidoo shopping list.
+
+    Catalogue recipes ("r59322") and your own recipes ("01M5...") can be mixed. You
+    must be connected first using connect_to_cookidoo.
+
+    Args:
+        recipe_ids: Recipe IDs, comma-separated
+
+    Returns:
+        str: The ingredients that were added
+    """
+    try:
+        if not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+
+        catalog, custom = split_recipe_ids(recipe_ids)
+        items = []
+        if catalog:
+            items += await _cookidoo_api.add_ingredient_items_for_recipes(catalog)
+        if custom:
+            items += await _cookidoo_api.add_ingredient_items_for_custom_recipes(custom)
+        lines = [f"Added {len(items)} ingredient(s) to the shopping list:"]
+        lines += [f"  - {item.description} {item.name}".rstrip() for item in items]
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Adding to the shopping list failed: {str(e)}"
 
 
 @mcp.tool()
