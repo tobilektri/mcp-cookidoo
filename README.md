@@ -1,4 +1,4 @@
-# Cookidoo MCP Server
+# Cookidoo MCP Server – Thermomix recipes, meal planning & guided cooking with Claude
 
 **Your Thermomix kitchen, run by your AI assistant.** Turn any recipe idea or web recipe into a
 real Cookidoo recipe with guided cooking, find the right dish in the Cookidoo catalogue, plan your
@@ -32,6 +32,26 @@ week and fill your shopping list, all by just asking Claude (or any other MCP cl
 
 > **Disclaimer:** This is an unofficial project. The developers are not affiliated with, endorsed by,
 > or connected to Cookidoo, Vorwerk, Thermomix, or any of their subsidiaries or trademarks.
+
+## Auf Deutsch: Thermomix-Rezepte mit KI erstellen und die Woche planen
+
+Mit diesem MCP-Server erstellt dein KI-Assistent (z. B. Claude) **eigene Thermomix-Rezepte direkt in
+Cookidoo**, aus einer Idee, einem Rezept aus dem Netz oder einem Familienrezept. Die Rezepte
+landen in „Meine Rezepte“ und funktionieren mit **Guided Cooking**:
+- **Einstellungen:** Zeit, Temperatur, Stufe, Linkslauf und Varoma sind gesetzt.
+- **Modi:** Teig kneten, Turbo, Pürieren, Erwärmen und Reis kochen, beim TM7 auch Dampfgaren und
+  Anbraten.
+- **Zutaten:** Sie sind in den Schritten verlinkt wie im Cookidoo-Editor.
+
+Nacharbeiten im Editor ist nicht nötig.
+
+Außerdem kann der Assistent:
+- **Suchen:** Rezepte im Cookidoo-Katalog und unter deinen eigenen Kreationen finden.
+- **Planen:** Rezepte in den **Cookidoo-Wochenplan** („Meine Woche“) eintragen.
+- **Einkaufen:** die Zutaten auf die **Cookidoo-Einkaufsliste** setzen.
+
+Er funktioniert mit **Thermomix TM6 und TM7**. Die Einrichtung ist unten beschrieben (englisch).
+Die Rezepte selbst kannst du auf Deutsch schreiben lassen.
 
 ## What it can do
 
