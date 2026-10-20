@@ -87,6 +87,27 @@ The `.env` file stays on your computer and is excluded from git.
 
 On Windows the command is `C:\\path\\to\\mcp-cookidoo\\venv\\Scripts\\fastmcp.exe`.
 
+If you have [uv](https://docs.astral.sh/uv/) installed, you can skip step 2 and the `.env` file.
+uv installs the dependencies itself, and the credentials go into the config:
+
+```json
+{
+  "mcpServers": {
+    "cookidoo": {
+      "command": "uv",
+      "args": [
+        "run", "--with", "fastmcp", "--with", "cookidoo-api", "--with", "python-dotenv",
+        "--with", "pydantic", "fastmcp", "run", "/path/to/mcp-cookidoo/server.py", "--no-banner"
+      ],
+      "env": {
+        "COOKIDOO_EMAIL": "your-email@example.com",
+        "COOKIDOO_PASSWORD": "your-password-here"
+      }
+    }
+  }
+}
+```
+
 **Claude Code:**
 
 ```bash
@@ -103,19 +124,39 @@ fastmcp run server.py
 
 ## Using it
 
-Just ask your assistant, for example:
+Copy the example prompt below into your assistant and replace the dish in the first line. It
+contains everything the assistant needs to know to get the Thermomix settings and ingredient links
+right. You can write it in any language; the last rule decides the language of the recipe.
 
-> Connect to Cookidoo and create a Thermomix recipe for a vegetable curry for 4 people. Write the
-> Thermomix settings in Cookidoo notation and use the ingredient lines word for word in the steps.
+```text
+Create a Thermomix recipe for [DISH, e.g. "vegetable curry for 4 people"] and save it to my
+Cookidoo account with the Cookidoo tools.
+
+Rules for the recipe:
+- Ingredients: one per line, short and without preparation notes ("1 Zwiebel", not
+  "1 Zwiebel, halbiert"). Notes like "halbiert" go into the step.
+- Every ingredient must appear in a step exactly as written in the ingredient list, word for
+  word, so that it is linked. Write "1 Zwiebel in den Mixtopf geben", not "die Zwiebel".
+- Write each Thermomix setting in Cookidoo notation as time/temperature/speed, in German, e.g.
+  "5 Sek./Stufe 5", "3 Min./120°C/Stufe 1", "15 Min./100°C/Linkslauf/Stufe 1" or
+  "12 Min./100°C/Linkslauf/Sanftrührstufe". Speed 0.5 to 10, temperature 37 to 160 °C.
+- Use only one Thermomix setting per step; split longer processes into several steps.
+- Do not use Varoma, Turbo, dough mode or other modes, they are not supported yet.
+- Write the recipe in German.
+
+Process:
+1. Connect with connect_to_cookidoo.
+2. Check the recipe with generate_recipe_structure. If the output lists unlinked ingredients or
+   unrecognised settings, fix the steps and check again until everything is linked.
+3. Show me the recipe and wait for my OK.
+4. Upload it with upload_custom_recipe and give me the recipe ID and link.
+```
 
 The assistant then works through these tools:
 
 1. `connect_to_cookidoo` signs in.
 2. `generate_recipe_structure` checks the recipe and reports detected settings and links.
 3. `upload_custom_recipe` saves it to your account and returns the recipe ID and link.
-
-[`prompt.md`](prompt.md) (English) and [`prompt_FR.md`](prompt_FR.md) (French) contain a complete
-prompt that leads the assistant through this process step by step.
 
 ### All tools
 
