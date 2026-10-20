@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from modes import BUILTIN_CATALOG, device_from_tools, parse_editor_html
-from thermomix import build_instruction, check_steps, describe_instructions
+from mcp_cookidoo.modes import BUILTIN_CATALOG, device_from_tools, parse_editor_html
+from mcp_cookidoo.thermomix import build_instruction, check_steps, describe_instructions
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

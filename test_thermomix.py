@@ -1,6 +1,6 @@
 """Tests for thermomix.py. Run with: pytest test_thermomix.py"""
 
-from thermomix import (
+from mcp_cookidoo.thermomix import (
     REVERSE_GLYPH,
     build_instruction,
     build_instructions,

@@ -52,7 +52,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from modes import (
+from .modes import (
     BUILTIN_CATALOG,
     MODE_RULES,
     TTS_MAX_HEATING_SPEED,

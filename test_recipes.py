@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from recipes import (
+from mcp_cookidoo.recipes import (
     format_catalog_recipe,
     format_custom_recipe,
     format_custom_recipes,

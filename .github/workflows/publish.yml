@@ -1,0 +1,80 @@
+# Release: push a tag like v1.0.1 (same version as in pyproject.toml and server.json).
+# Tests run, the package is published to PyPI (trusted publishing, no token) and the
+# server metadata to the MCP Registry (GitHub OIDC, no token).
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Check that tag, pyproject.toml and server.json agree
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PYPROJECT=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          SERVER=$(jq -r '.version' server.json)
+          PACKAGE=$(jq -r '.packages[0].version' server.json)
+          echo "tag=$TAG pyproject=$PYPROJECT server.json=$SERVER package=$PACKAGE"
+          test "$TAG" = "$PYPROJECT" && test "$TAG" = "$SERVER" && test "$TAG" = "$PACKAGE"
+
+      - name: Run tests
+        run: uv run --python 3.12 --with pytest --with . pytest -q
+
+      - name: Build package
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing to PyPI
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  mcp-registry:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # GitHub OIDC login to the MCP Registry
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Wait until PyPI serves the new version
+        run: |
+          VERSION=$(jq -r '.version' server.json)
+          for i in $(seq 1 30); do
+            curl -sf "https://pypi.org/pypi/mcp-cookidoo/$VERSION/json" > /dev/null && exit 0
+            sleep 10
+          done
+          echo "Version $VERSION did not appear on PyPI" && exit 1
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish

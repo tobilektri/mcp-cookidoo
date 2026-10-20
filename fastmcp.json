@@ -1,6 +1,6 @@
 {
   "name": "cookidoo-mcp-server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Thermomix & Cookidoo for AI assistants: create Cookidoo recipes with guided cooking (TM6/TM7 modes, Varoma, Turbo), search recipes, plan your week and fill your shopping list",
   "source": "server.py"
 }

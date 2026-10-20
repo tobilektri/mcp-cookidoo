@@ -30,6 +30,8 @@ week and fill your shopping list, all by just asking Claude (or any other MCP cl
 - **Made for the TM6 and the TM7.** Each recipe is built for your device and only uses what it can
   do.
 
+<!-- mcp-name: io.github.tobilektri/mcp-cookidoo -->
+
 > **Disclaimer:** This is an unofficial project. The developers are not affiliated with, endorsed by,
 > or connected to Cookidoo, Vorwerk, Thermomix, or any of their subsidiaries or trademarks.
 
@@ -77,83 +79,20 @@ Die Rezepte selbst kannst du auf Deutsch schreiben lassen.
 
 ## Setup
 
-You need **Python 3.12 or newer** and a **Cookidoo account** (with an active subscription so you can
-create your own recipes).
+You need a **Cookidoo account** (with an active subscription so you can create your own recipes)
+and [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs Python and the
+server for you. No download of this project is needed.
 
-### 1. Download the project
+### Claude Desktop
 
-```bash
-git clone https://github.com/tobilektri/mcp-cookidoo.git
-cd mcp-cookidoo
-```
-
-### 2. Create a virtual environment and install the dependencies
-
-macOS / Linux:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-Windows (PowerShell):
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-### 3. Enter your Cookidoo credentials
-
-Copy the example file and fill in your login:
-
-```bash
-cp .env.example .env
-```
-
-```ini
-COOKIDOO_EMAIL=your-email@example.com
-COOKIDOO_PASSWORD=your-password-here
-
-# Optional, defaults to the German Cookidoo
-COOKIDOO_COUNTRY=de
-COOKIDOO_LANGUAGE=de-DE
-```
-
-The `.env` file stays on your computer and is excluded from git.
-
-### 4. Add the server to your MCP client
-
-**Claude Desktop:** open *Settings → Developer → Edit Config* and add the server to
-`claude_desktop_config.json`. Use absolute paths to your project folder:
+Open *Settings → Developer → Edit Config* and add the server to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "cookidoo": {
-      "command": "/path/to/mcp-cookidoo/venv/bin/fastmcp",
-      "args": ["run", "/path/to/mcp-cookidoo/server.py"]
-    }
-  }
-}
-```
-
-On Windows the command is `C:\\path\\to\\mcp-cookidoo\\venv\\Scripts\\fastmcp.exe`.
-
-If you have [uv](https://docs.astral.sh/uv/) installed, you can skip step 2 and the `.env` file.
-uv installs the dependencies itself, and the credentials go into the config:
-
-```json
-{
-  "mcpServers": {
-    "cookidoo": {
-      "command": "uv",
-      "args": [
-        "run", "--with", "fastmcp", "--with", "cookidoo-api", "--with", "python-dotenv",
-        "--with", "pydantic", "fastmcp", "run", "/path/to/mcp-cookidoo/server.py", "--no-banner"
-      ],
+      "command": "uvx",
+      "args": ["mcp-cookidoo"],
       "env": {
         "COOKIDOO_EMAIL": "your-email@example.com",
         "COOKIDOO_PASSWORD": "your-password-here"
@@ -163,19 +102,37 @@ uv installs the dependencies itself, and the credentials go into the config:
 }
 ```
 
-**Claude Code:**
+Restart Claude Desktop. The Cookidoo tools now show up in the tool list.
+
+### Claude Code
 
 ```bash
-claude mcp add cookidoo -- /path/to/mcp-cookidoo/venv/bin/fastmcp run /path/to/mcp-cookidoo/server.py
+claude mcp add cookidoo -e COOKIDOO_EMAIL=your-email@example.com -e COOKIDOO_PASSWORD=your-password-here -- uvx mcp-cookidoo
 ```
 
-Restart the client. The Cookidoo tools now show up in the tool list.
+### Other countries
 
-To start the server on its own, for example to see whether it runs at all, use:
+The server uses the German Cookidoo by default. For another country add, for example,
+`"COOKIDOO_COUNTRY": "fr"` and `"COOKIDOO_LANGUAGE": "fr-FR"` to `env`. The Thermomix settings in
+steps are always written in German notation (see below).
+
+### Running from a source checkout
+
+For development, or if you prefer not to use uvx:
 
 ```bash
-fastmcp run server.py
+git clone https://github.com/tobilektri/mcp-cookidoo.git
+cd mcp-cookidoo
+python -m venv venv
+source venv/bin/activate        # Windows: .\venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+cp .env.example .env            # then enter your Cookidoo login in .env
 ```
+
+In the MCP client use the command `/path/to/mcp-cookidoo/venv/bin/mcp-cookidoo` (Windows:
+`C:\\path\\to\\mcp-cookidoo\\venv\\Scripts\\mcp-cookidoo.exe`) instead of `uvx`. The `.env` file
+stays on your computer and is excluded from git. `fastmcp run server.py` in the project folder
+starts the server as well.
 
 ## Using it
 
@@ -332,11 +289,11 @@ replaces all steps and leaves everything else alone.
 
 ## Development
 
-Run the tests for the settings, modes and link detection:
+The code lives in the `mcp_cookidoo` package. In a source checkout (see above) run the tests for
+the settings, modes, links and recipe helpers with:
 
 ```bash
-pip install pytest
-pytest test_thermomix.py test_modes.py test_recipes.py
+pytest
 ```
 
 The files in `fixtures/` are the settings dialog of the Cookidoo editor (TM6 and TM7) and steps
@@ -349,12 +306,25 @@ black .
 ruff check .
 ```
 
+### Releasing
+
+1. Set the new version in `pyproject.toml`, `mcp_cookidoo/__init__.py`, `fastmcp.json` and
+   twice in `server.json`.
+2. Commit, then tag and push: `git tag v1.0.1 && git push origin v1.0.1`.
+
+The GitHub Actions workflow `publish.yml` runs the tests, publishes the package to
+[PyPI](https://pypi.org/project/mcp-cookidoo/) and the server to the
+[MCP Registry](https://registry.modelcontextprotocol.io).
+
 ## Acknowledgments
 
-This project is built on top of [cookidoo-api](https://github.com/miaucl/cookidoo-api), which
-provides the Python interface to the Cookidoo platform. Special thanks for making this integration
-possible!
+This project started as a fork of [alexandrepa/mcp-cookidoo](https://github.com/alexandrepa/mcp-cookidoo)
+by Alexandre Patelli, who built the first version of the server (login, recipe structure and
+upload). Thank you!
+
+It is built on top of [cookidoo-api](https://github.com/miaucl/cookidoo-api), which provides the
+Python interface to the Cookidoo platform. Special thanks for making this integration possible!
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

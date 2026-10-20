@@ -6,7 +6,7 @@ Module to encapsulate all cookidoo-api logic for interacting with the Cookidoo p
 
 import os
 from typing import Optional
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from aiohttp import ClientSession
 from cookidoo_api import Cookidoo, CookidooConfig
 from cookidoo_api.helpers import (
@@ -16,8 +16,8 @@ import asyncio
 import sys
 import time
 
-from modes import BUILTIN_CATALOG, ModeCatalog, device_from_tools, parse_editor_html
-from thermomix import build_instructions, normalize_text
+from .modes import BUILTIN_CATALOG, ModeCatalog, device_from_tools, parse_editor_html
+from .thermomix import build_instructions, normalize_text
 
 # How long a mode catalog read from Cookidoo is reused before it is read again.
 _CATALOG_TTL = 3600
@@ -33,7 +33,10 @@ def load_cookidoo_credentials() -> tuple[str, str]:
     Raises:
         ValueError: If credentials are not found in environment variables
     """
+    # A .env next to the source code (git checkout) or in the working directory
+    # (installed package); credentials set by the MCP client's config take precedence.
     load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     
     email = os.getenv("COOKIDOO_EMAIL")
     password = os.getenv("COOKIDOO_PASSWORD")
