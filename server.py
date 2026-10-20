@@ -7,7 +7,8 @@ Main server file containing MCP tool definitions for interacting with Cookidoo.
 from fastmcp import FastMCP
 from cookidoo_service import CookidooService, load_cookidoo_credentials
 from schemas import CustomRecipe
-from thermomix import build_instructions, describe_instructions
+from modes import BUILTIN_CATALOG, DEVICES, MODE_RULES, ModeCatalog
+from thermomix import format_time, build_instructions, check_steps, describe_instructions
 import json
 import re
 
@@ -31,12 +32,27 @@ def _parse_steps(steps: str) -> list[str]:
     ]
 
 
-def _format_settings_report(steps: list[str], ingredients: list[str]) -> str:
-    """Describe Thermomix settings and ingredient links per step (and what looks wrong)."""
-    instructions = build_instructions(steps, ingredients)
-    lines = describe_instructions(instructions, ingredients)
+def _format_settings_report(
+    steps: list[str],
+    ingredients: list[str],
+    catalog: ModeCatalog = BUILTIN_CATALOG,
+    device: str = "TM6",
+    note: str = "",
+) -> str:
+    """Describe settings, modes and ingredient links per step (and what looks wrong)."""
+    instructions = build_instructions(steps, ingredients, catalog, device)
+    warnings = check_steps(steps, catalog, device)
+    warned = {line.split(":", 1)[0] for line in warnings}
+    report = [
+        line for line in describe_instructions(instructions, ingredients, catalog)
+        # The general "not recognised" hint adds nothing to a step with a specific warning.
+        if not (line.split(":", 1)[0] in warned and "WARNING" in line)
+    ]
+    step_lines = [line for line in report + warnings if line.startswith("Step ")]
+    step_lines.sort(key=lambda line: int(line.split()[1].rstrip(":")))  # stable per step
+    lines = step_lines + [line for line in report if not line.startswith("Step ")]
     has_settings = any(
-        annotation["type"] == "TTS"
+        annotation["type"] in ("TTS", "MODE")
         for instruction in instructions
         for annotation in instruction.get("annotations", [])
     )
@@ -44,11 +60,74 @@ def _format_settings_report(steps: list[str], ingredients: list[str]) -> str:
         lines.insert(
             0,
             "No Thermomix settings recognised. Write them like '3 Min./120°C/Stufe 1' or "
-            "'15 Min./100°C/Linkslauf/Sanftrührstufe' to enable guided cooking.",
+            "'Teig kneten/2 Min.' to enable guided cooking (see get_thermomix_modes).",
         )
-    return "Annotations (guided cooking and ingredient links):\n" + "\n".join(
-        f"  {line}" for line in lines
-    )
+    source = "read from Cookidoo" if catalog.source == "cookidoo" else "built-in list"
+    header = f"Annotations for the {device} (guided cooking and ingredient links, modes {source}):"
+    if note:
+        header = f"{note}\n{header}"
+    return header + "\n" + "\n".join(f"  {line}" for line in lines)
+
+
+async def _ensure_catalog() -> tuple[ModeCatalog, str]:
+    """The modes Cookidoo offers right now; the built-in list if not connected."""
+    if not _cookidoo_service or not _cookidoo_api:
+        return BUILTIN_CATALOG, (
+            "Modes: not connected, used the built-in list. Connect with "
+            "'connect_to_cookidoo' to check against what Cookidoo offers."
+        )
+    return await _cookidoo_service.get_mode_catalog()
+
+
+def _check_device(device: str) -> str:
+    device = device.strip().upper()
+    if device not in DEVICES:
+        raise ValueError(f"device must be one of {', '.join(DEVICES)}")
+    return device
+
+
+# Spelling of each mode in a step, with "{title}" for the name Cookidoo shows.
+_MODE_EXAMPLES = {
+    "dough": "{title}/2 Min.",
+    "turbo": "{title}/1 Sek.",
+    "blend": "{title}/1 Min./Stufe 8",
+    "warm_up": "{title}/65°C/Stufe 1",
+    "rice_cooker": "[{title}]",
+    "steaming": "{title}/20 Min./Stufe 1/im Varoma",
+    "browning": "{title}/10 Min./160°C/Leicht",
+}
+
+
+def _describe_rule(name: str, catalog: ModeCatalog, device: str) -> str:
+    rule = MODE_RULES[name]
+    parts = []
+    if name == "turbo":
+        parts.append(f"time {' / '.join(catalog.turbo_times)} Sek.")
+        if device == "TM7":
+            parts.append(f"optional pulses {catalog.pulse_counts[0]}x-{catalog.pulse_counts[-1]}x")
+    elif rule.min_time is not None:
+        parts.append(f"time {format_time(rule.min_time)} to {format_time(rule.max_time)}")
+    if rule.temperatures:
+        temps = [t for t in rule.temperatures if t in catalog.temperatures]
+        parts.append(f"temperature {', '.join(temps)}°C")
+    if rule.speeds:
+        speeds = [s.replace("soft", "Sanftrührstufe") for s in rule.speeds if s in catalog.speeds]
+        parts.append(f"speed {', '.join(speeds)}")
+    if "reverse" in rule.allowed:
+        parts.append("optional Linkslauf")
+    if "accessory" in rule.allowed:
+        parts.append(f"optional {' / '.join(catalog.accessories.values())}")
+    if "power" in rule.allowed:
+        parts.append(f"optional {' / '.join(catalog.browning_powers.values())}")
+    defaults = {
+        "time": lambda v: format_time(v),
+        "speed": lambda v: "Sanftrührstufe" if v == "soft" else f"Stufe {v}",
+        "accessory": lambda v: catalog.accessories.get(v, v),
+        "power": lambda v: catalog.browning_powers.get(v, v),
+    }
+    for key, value in rule.defaults.items():
+        parts.append(f"without {key}: {defaults.get(key, str)(value)}")
+    return "; ".join(parts) or "no values"
 
 
 @mcp.tool()
@@ -89,6 +168,67 @@ async def connect_to_cookidoo() -> str:
     except Exception as e:
         # Authentication or other errors
         return f"Connection Failed: {str(e)}\n\nPlease check your credentials and try again."
+
+
+@mcp.tool()
+async def get_thermomix_modes(device: str = "TM6") -> str:
+    """
+    List the Thermomix modes Cookidoo offers right now and how to write them in a step.
+
+    Call this before writing a recipe that uses modes (dough, turbo, blend, warm up,
+    rice cooker, and for the TM7 steaming and browning). The list is read live from
+    the Cookidoo recipe editor, so new or removed modes show up here. Normal settings
+    (time/temperature/speed, e.g. "3 Min./120°C/Stufe 1") always work in addition.
+
+    Args:
+        device: "TM6" (default) or "TM7"
+
+    Returns:
+        str: Available modes with spelling and allowed values
+    """
+    try:
+        device = _check_device(device)
+        catalog, note = await _ensure_catalog()
+
+        lines = [f"Thermomix modes for the {device}:"]
+        for name, title in catalog.available_modes(device).items():
+            example = _MODE_EXAMPLES.get(name, "{title}").format(title=title)
+            lines.append(f"  {title}: write '{example}' ({_describe_rule(name, catalog, device)})")
+
+        varoma = catalog.labels["varoma"]
+        temps = [t for t in catalog.tts_temperatures(device) if t.isdigit()]
+        lines.append("")
+        lines.append(
+            "Normal settings (always available): time/temperature/speed, e.g. "
+            "'3 Min./120°C/Stufe 1', '15 Min./100°C/Linkslauf/Stufe 1', "
+            "'12 Min./100°C/Linkslauf/Sanftrührstufe'."
+        )
+        lines.append(f"  Temperatures: {', '.join(temps)}°C; heating only up to speed 6.")
+        if "varoma" in catalog.tts_temperatures(device):
+            lines.append(f"  {varoma}: '20 Min./{varoma}/Stufe 1'.")
+        else:
+            lines.append(f"  {varoma} as a temperature is not available for the {device}.")
+
+        other = [
+            title for name, title in catalog.modes.items()
+            if name in MODE_RULES and not catalog.is_available(name, device)
+        ]
+        if other:
+            lines.append(f"Not available for the {device}: {', '.join(other)}.")
+        unsupported = catalog.unsupported_modes()
+        if unsupported:
+            lines.append(
+                "Offered by Cookidoo but not supported by this server yet (leave as text): "
+                + ", ".join(unsupported.values())
+            )
+        source = "read from Cookidoo" if catalog.source == "cookidoo" else "built-in list"
+        lines.append(f"Source: {source}.")
+        if note:
+            lines.append(note)
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Failed to list Thermomix modes: {str(e)}"
 
 
 @mcp.tool()
@@ -172,13 +312,15 @@ async def generate_recipe_structure(
     prep_time: int = 30,
     total_time: int = 60,
     hints: str = "",
+    device: str = "TM6",
 ) -> str:
     """
     Generate and validate a recipe structure ready for upload to Cookidoo.
     
     This tool helps you structure your recipe data properly before uploading.
     It validates all fields and returns a JSON structure that can be used with
-    the upload_custom_recipe tool.
+    the upload_custom_recipe tool. The modes are checked against what Cookidoo offers
+    right now (call get_thermomix_modes to see them and their spelling).
     
     Thermomix settings: write them inside the step text in Cookidoo notation and
     they are turned into real Thermomix settings (guided cooking) on upload:
@@ -186,8 +328,20 @@ async def generate_recipe_structure(
         "3 Min./120°C/Stufe 1"           time/temperature/speed
         "15 Min./100°C/Linkslauf/Stufe 1"  counter-clockwise (reverse) stirring
         "12 Min./100°C/Linkslauf/Sanftrührstufe"  soft stir (Sanftrührstufe)
+        "20 Min./Varoma/Stufe 1"         Varoma (TM6 only)
         "1 Min. 30 Sek./Stufe 0,5"       minutes and seconds, half speed
-    Varoma, dough mode and turbo are not supported (kept as plain text).
+    Temperatures 37-120 °C in Cookidoo's steps (37, 40, 45 ... 95, 98, 100, 105 ...),
+    heating only up to speed 6.
+
+    Modes: the mode name, then its values, separated by "/":
+        "Teig kneten/2 Min."             dough
+        "Turbo/1 Sek."                   turbo 0.5/1/2 s (TM7 also "Turbo/1 Sek./3x")
+        "Pürieren/1 Min./Stufe 8"        blend, speed 6-8
+        "Erwärmen/65°C/Stufe 1"          warm up, 37-90 °C
+        "[Reis kochen]"                  rice cooker (brackets: no values)
+        "Dampfgaren/20 Min./Stufe 1/im Varoma"  steaming (TM7)
+        "Anbraten/10 Min./160°C/Leicht"  browning (TM7)
+    Invalid values stay plain text and are listed as warnings in the output.
 
     Ingredient links: if a step contains an ingredient line verbatim (exactly as it
     appears in the ingredients list, e.g. "1 Zwiebel"), that text becomes a link to the
@@ -202,11 +356,14 @@ async def generate_recipe_structure(
         prep_time: Preparation time in minutes (default: 30)
         total_time: Total cooking time in minutes (default: 60)
         hints: Optional cooking tips, one per line or comma-separated
+        device: Thermomix the recipe is for, "TM6" (default) or "TM7"
         
     Returns:
         str: Validated recipe structure in JSON format, ready for upload
     """
     try:
+        device = _check_device(device)
+
         # Parse ingredients (split by newlines or commas)
         ingredients_list = [
             ing.strip() 
@@ -234,13 +391,17 @@ async def generate_recipe_structure(
             servings=servings,
             prep_time=prep_time,
             total_time=total_time,
-            hints=hints_list
+            hints=hints_list,
+            device=device,
         )
         
         # Return formatted JSON
         recipe_json = recipe.model_dump_json(indent=2)
         
-        settings_report = _format_settings_report(recipe.steps, recipe.ingredients)
+        catalog, note = await _ensure_catalog()
+        settings_report = _format_settings_report(
+            recipe.steps, recipe.ingredients, catalog, device, note
+        )
 
         return f"Recipe structure validated successfully!\n\n{recipe_json}\n\n{settings_report}\n\nYou can now use this with 'upload_custom_recipe'."
         
@@ -257,9 +418,10 @@ async def upload_custom_recipe(recipe_json: str) -> str:
     Use 'generate_recipe_structure' first to validate your recipe data, then
     pass the resulting JSON to this tool.
 
-    Thermomix settings written in the step texts (e.g. "3 Min./120°C/Stufe 1") are
-    uploaded as real Thermomix settings, and ingredient lines that appear verbatim in a
-    step are uploaded as ingredient links, so no manual editing in Cookidoo is needed.
+    Thermomix settings and modes written in the step texts (e.g. "3 Min./120°C/Stufe 1",
+    "Teig kneten/2 Min.") are uploaded as real Thermomix settings, and ingredient lines
+    that appear verbatim in a step are uploaded as ingredient links, so no manual editing
+    in Cookidoo is needed. The modes are read from Cookidoo right before the upload.
 
     Args:
         recipe_json: The validated recipe JSON from generate_recipe_structure
@@ -284,21 +446,22 @@ async def upload_custom_recipe(recipe_json: str) -> str:
             return f"Invalid recipe data: {str(e)}"
         
         # Create the recipe using our custom service method
-        recipe_id = await _cookidoo_service.create_custom_recipe(
+        recipe_id, catalog, note = await _cookidoo_service.create_custom_recipe(
             name=recipe.name,
             ingredients=recipe.ingredients,
             steps=recipe.steps,
             servings=recipe.servings,
             prep_time=recipe.prep_time,
             total_time=recipe.total_time,
-            hints=recipe.hints
+            hints=recipe.hints,
+            device=recipe.device,
         )
-        
-        # Get localization for URL
-        localization = _cookidoo_api.localization
-        recipe_url = f"https://{localization.url}/recipes/custom-recipes/{recipe_id}"
-        
-        settings_report = _format_settings_report(recipe.steps, recipe.ingredients)
+
+        recipe_url = _cookidoo_service.recipe_url(recipe_id)
+
+        settings_report = _format_settings_report(
+            recipe.steps, recipe.ingredients, catalog, recipe.device, note
+        )
 
         return f"Recipe '{recipe.name}' created successfully!\n\nRecipe ID: {recipe_id}\nURL: {recipe_url}\n\n{settings_report}\n\nYour recipe is now saved in your Cookidoo account!"
 
@@ -315,14 +478,15 @@ async def update_custom_recipe_steps(
     ingredient links.
 
     Use this to fix or add Thermomix settings (time, temperature, speed, reverse, soft
-    stir) and ingredient links on a recipe that was already uploaded. Only the steps are
-    changed; ingredients, times and hints stay as they are. You must be connected first
-    using connect_to_cookidoo.
+    stir), modes (dough, turbo, ...) and ingredient links on a recipe that was already
+    uploaded. Only the steps are changed; ingredients, times and hints stay as they are.
+    The device (TM6/TM7) is taken from the recipe, the modes are read from Cookidoo.
+    You must be connected first using connect_to_cookidoo.
 
     Write the settings inside the step text in Cookidoo notation, for example
-    "3 Min./120°C/Stufe 1" or "12 Min./100°C/Linkslauf/Sanftrührstufe" (see
-    generate_recipe_structure for all forms). Ingredient lines that appear verbatim in
-    a step become links.
+    "3 Min./120°C/Stufe 1", "12 Min./100°C/Linkslauf/Sanftrührstufe" or
+    "Teig kneten/2 Min." (see generate_recipe_structure and get_thermomix_modes for all
+    forms). Ingredient lines that appear verbatim in a step become links.
 
     Args:
         recipe_id: ID of your custom recipe (e.g., "01M5A79NY53CEKEW6NKVYBFSTW")
@@ -347,15 +511,14 @@ async def update_custom_recipe_steps(
             line.strip() for line in ingredients.split("\n") if line.strip()
         ] or None
 
-        ingredient_lines, note = await _cookidoo_service.update_recipe_steps(
+        ingredient_lines, device, catalog, note = await _cookidoo_service.update_recipe_steps(
             recipe_id, steps_list, given_ingredients
         )
 
-        settings_report = _format_settings_report(steps_list, ingredient_lines)
-        result = f"Steps of recipe {recipe_id} updated ({len(steps_list)} steps).\n\n{settings_report}"
-        if note:
-            result += f"\n\n{note}"
-        return result
+        settings_report = _format_settings_report(
+            steps_list, ingredient_lines, catalog, device, note
+        )
+        return f"Steps of recipe {recipe_id} updated ({len(steps_list)} steps).\n\n{settings_report}"
 
     except Exception as e:
         return f"Update failed: {str(e)}"

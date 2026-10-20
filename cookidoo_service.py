@@ -14,8 +14,13 @@ from cookidoo_api.helpers import (
 )
 import asyncio
 import sys
+import time
 
+from modes import BUILTIN_CATALOG, ModeCatalog, device_from_tools, parse_editor_html
 from thermomix import build_instructions, normalize_text
+
+# How long a mode catalog read from Cookidoo is reused before it is read again.
+_CATALOG_TTL = 3600
 
 
 def load_cookidoo_credentials() -> tuple[str, str]:
@@ -57,6 +62,8 @@ class CookidooService:
         self.password = password
         self._api_client: Optional[Cookidoo] = None
         self._session: Optional[ClientSession] = None
+        self._catalog: Optional[ModeCatalog] = None
+        self._catalog_time = 0.0
     
     async def login(self) -> Cookidoo:
         """
@@ -113,7 +120,8 @@ class CookidooService:
         prep_time: int = 30,
         total_time: int = 60,
         hints: Optional[list[str]] = None,
-    ) -> str:
+        device: str = "TM6",
+    ) -> tuple[str, ModeCatalog, str]:
         """
         Create a completely new custom recipe from scratch using the undocumented API.
         
@@ -125,9 +133,11 @@ class CookidooService:
             prep_time: Preparation time in minutes (default: 30)
             total_time: Total cooking time in minutes (default: 60)
             hints: Optional list of hints/tips for the recipe
-            
+            device: Thermomix the recipe is for ("TM6" or "TM7")
+
         Returns:
-            str: The created recipe ID
+            tuple: (created recipe ID, mode catalog the steps were built with, note -
+            empty unless the built-in catalog had to be used)
             
         Raises:
             Exception: If recipe creation fails
@@ -154,6 +164,10 @@ class CookidooService:
                 if not recipe_id:
                     raise Exception("No recipe ID returned from creation")
             
+            # The modes are read from the editor page of the new recipe, so the steps are
+            # always built with what Cookidoo offers right now.
+            catalog, note = await self.get_mode_catalog(recipe_id, refresh=True)
+
             # Step 2: Update recipe with ingredients
             update_url = f"{base_url}/created-recipes/{locale}/{recipe_id}"
             
@@ -162,7 +176,7 @@ class CookidooService:
                 "name": name,
                 "image": None,  # Can be null or match pattern: ^((prod|nonprod)/img/customer-recipe/)?[A-Za-z0-9-_]{1,}.(bmp|jpe|jpeg|jpg|png)$
                 "isImageOwnedByUser": False,
-                "tools": ["TM6"],
+                "tools": [device],
                 "yield": {"value": servings, "unitText": "portion"},
                 "prepTime": prep_time * 60,  # Convert minutes to seconds
                 "cookTime": 0,
@@ -170,10 +184,11 @@ class CookidooService:
                 "ingredients": [
                     {"type": "INGREDIENT", "text": normalize_text(ing)} for ing in ingredients
                 ],
-                # Thermomix settings in the step texts ("3 Min./120°C/Stufe 1") become
-                # TTS annotations (guided cooking); ingredient lines that appear verbatim
-                # in a step become INGREDIENT annotations (links).
-                "instructions": build_instructions(steps, ingredients),
+                # Thermomix settings ("3 Min./120°C/Stufe 1") and modes ("Teig kneten/
+                # 2 Min.") in the step texts become TTS/MODE annotations (guided cooking);
+                # ingredient lines that appear verbatim in a step become INGREDIENT
+                # annotations (links).
+                "instructions": build_instructions(steps, ingredients, catalog, device),
                 "hints": "\n".join(hints) if hints and isinstance(hints, list) else (hints if hints else ""),
                 "workStatus": "PRIVATE",
                 "recipeMetadata": {
@@ -189,7 +204,7 @@ class CookidooService:
                 if response.status not in [200, 204]:
                     raise Exception(f"Failed to update recipe: {response_text}")
             
-            return recipe_id
+            return recipe_id, catalog, note
             
         except Exception as e:
             raise Exception(f"Failed to create custom recipe: {str(e)}") from e
@@ -199,14 +214,15 @@ class CookidooService:
         recipe_id: str,
         steps: list[str],
         ingredients: Optional[list[str]] = None,
-    ) -> tuple[list[str], str]:
+    ) -> tuple[list[str], str, ModeCatalog, str]:
         """
         Replace the instructions of an existing custom recipe.
 
         Only the instructions are sent (the Cookidoo editor does the same), so all other
-        recipe fields stay untouched. Thermomix settings inside the step texts are
-        converted to TTS annotations and ingredient lines that appear verbatim in a step
-        to INGREDIENT annotations (links).
+        recipe fields stay untouched. Thermomix settings and modes inside the step texts
+        are converted to TTS/MODE annotations and ingredient lines that appear verbatim
+        in a step to INGREDIENT annotations (links). The device (TM6/TM7) is taken from
+        the recipe and the modes from its editor page.
 
         Args:
             recipe_id: ID of a custom recipe, as returned by create_custom_recipe
@@ -215,18 +231,27 @@ class CookidooService:
                 ingredients are loaded from Cookidoo.
 
         Returns:
-            tuple: (ingredient lines used for linking, note - empty unless linking was
-            skipped because the ingredients could not be loaded)
+            tuple: (ingredient lines used for linking, device, mode catalog, notes -
+            empty unless something had to fall back)
 
         Raises:
             Exception: If the update fails
         """
         try:
             base_url, locale, headers, api_session = self._request_context()
-            note = ""
+            loaded, device, recipe_note = await self._fetch_recipe_info(recipe_id)
+            notes = []
             if ingredients is None:
-                ingredients, note = await self._fetch_ingredients(recipe_id)
-            instructions = build_instructions(steps, ingredients)
+                ingredients = loaded
+                if recipe_note:
+                    notes.append(f"Ingredient links skipped: {recipe_note}")
+            if recipe_note:
+                notes.append(f"Device unknown, built for the TM6: {recipe_note}")
+            catalog, catalog_note = await self.get_mode_catalog(recipe_id, refresh=True)
+            if catalog_note:
+                notes.append(catalog_note)
+
+            instructions = build_instructions(steps, ingredients, catalog, device)
             update_url = f"{base_url}/created-recipes/{locale}/{recipe_id}"
 
             async with api_session.patch(
@@ -238,38 +263,101 @@ class CookidooService:
                         f"Status: {response.status}, Error: {response_text}"
                     )
 
-            return ingredients, note
+            return ingredients, device, catalog, "\n".join(notes)
 
         except Exception as e:
             raise Exception(f"Failed to update recipe steps: {str(e)}") from e
 
-    async def _fetch_ingredients(self, recipe_id: str) -> tuple[list[str], str]:
+    async def _fetch_recipe_info(self, recipe_id: str) -> tuple[list[str], str, str]:
         """
-        Load the ingredient lines of a custom recipe.
+        Load the ingredient lines and the device of a custom recipe.
 
         Returns:
-            tuple: (ingredient lines, note). On failure the list is empty and the note
-            explains that ingredient links were skipped.
+            tuple: (ingredient lines, device, note). On failure the list is empty, the
+            device is "TM6" and the note says why.
         """
         try:
             base_url, locale, headers, api_session = self._request_context()
             url = f"{base_url}/created-recipes/{locale}/{recipe_id}"
             async with api_session.get(url, headers=headers) as response:
                 if response.status != 200:
-                    return [], (
-                        "Ingredient links skipped: could not load the recipe's "
-                        f"ingredients (status {response.status})."
-                    )
+                    return [], "TM6", f"could not load the recipe (status {response.status})."
                 data = await response.json()
 
             content = data.get("recipeContent", {})
             lines = content.get("recipeIngredient") or [
                 item.get("text", "") for item in content.get("ingredients", [])
             ]
-            return [line for line in lines if line], ""
+            device = device_from_tools(content.get("tool") or content.get("tools"))
+            return [line for line in lines if line], device, ""
 
         except Exception as e:
-            return [], f"Ingredient links skipped: could not load ingredients ({e})."
+            return [], "TM6", f"could not load the recipe ({e})."
+
+    def recipe_url(self, recipe_id: str) -> str:
+        """Web address of a custom recipe on Cookidoo."""
+        base_url, locale, _, _ = self._request_context()
+        return f"{base_url}/created-recipes/{locale}/{recipe_id}"
+
+    async def list_recipe_ids(self) -> list[str]:
+        """IDs of the user's own (created) recipes, newest first."""
+        base_url, locale, headers, api_session = self._request_context()
+        async with api_session.get(
+            f"{base_url}/created-recipes/{locale}", headers=headers
+        ) as response:
+            if response.status != 200:
+                raise Exception(f"could not list recipes (status {response.status})")
+            data = await response.json()
+        return [item["recipeId"] for item in data.get("items", []) if item.get("recipeId")]
+
+    async def get_mode_catalog(
+        self, recipe_id: Optional[str] = None, refresh: bool = False
+    ) -> tuple[ModeCatalog, str]:
+        """
+        Read the Thermomix modes Cookidoo offers from the recipe editor page.
+
+        The editor page of any own recipe lists all modes, speeds, temperatures etc.
+        (see modes.py). Without a recipe ID the newest own recipe is used. The result
+        is reused for an hour unless ``refresh`` is set.
+
+        Returns:
+            tuple: (catalog, note). If the page cannot be read, the built-in catalog is
+            returned and the note says why.
+        """
+        if (
+            not refresh
+            and self._catalog is not None
+            and time.monotonic() - self._catalog_time < _CATALOG_TTL
+        ):
+            return self._catalog, ""
+        try:
+            base_url, locale, headers, api_session = self._request_context()
+            if recipe_id is None:
+                ids = await self.list_recipe_ids()
+                if not ids:
+                    return BUILTIN_CATALOG, (
+                        "Modes: no own recipe yet to read them from Cookidoo, used the "
+                        "built-in list (20.10.2026). Uploading reads them from Cookidoo."
+                    )
+                recipe_id = ids[0]
+            url = (
+                f"{base_url}/created-recipes/{locale}/{recipe_id}"
+                "/edit/ingredients-and-preparation-steps"
+            )
+            async with api_session.get(
+                url, headers={**headers, "Accept": "text/html"}
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"status {response.status}")
+                html = await response.text()
+            self._catalog = parse_editor_html(html)
+            self._catalog_time = time.monotonic()
+            return self._catalog, ""
+        except Exception as e:
+            return BUILTIN_CATALOG, (
+                f"Modes: could not read them from Cookidoo ({e}), used the built-in "
+                "list (20.10.2026)."
+            )
 
     def _request_context(self):
         """

@@ -5,7 +5,7 @@ Pydantic models for custom recipe data validation.
 """
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Literal, Optional
 
 
 class CustomRecipe(BaseModel):
@@ -71,4 +71,8 @@ class CustomRecipe(BaseModel):
     hints: Optional[list[str]] = Field(
         default=None,
         description="Optional cooking tips or hints"
+    )
+    device: Literal["TM6", "TM7"] = Field(
+        default="TM6",
+        description="Thermomix the recipe is for (decides which modes are available)"
     )
