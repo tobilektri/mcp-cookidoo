@@ -7,7 +7,9 @@ Main server file containing MCP tool definitions for interacting with Cookidoo.
 from fastmcp import FastMCP
 from cookidoo_service import CookidooService, load_cookidoo_credentials
 from schemas import CustomRecipe
+from thermomix import build_instructions, describe_instructions
 import json
+import re
 
 # Initialize FastMCP server
 mcp = FastMCP("cookidoo-mcp-server")
@@ -15,6 +17,38 @@ mcp = FastMCP("cookidoo-mcp-server")
 # Module-level state to store the authenticated session
 _cookidoo_service: CookidooService | None = None
 _cookidoo_api = None
+
+# Leading list markers such as "1.", "2)", "-" or "•" (but not "15 Min./..." at step start)
+_LIST_MARKER = re.compile(r"^\s*(?:\d+[.)]|[-•*])\s+")
+
+
+def _parse_steps(steps: str) -> list[str]:
+    """Split a multi-line steps string into clean step texts."""
+    return [
+        _LIST_MARKER.sub("", step).strip()
+        for step in steps.split("\n")
+        if step.strip()
+    ]
+
+
+def _format_settings_report(steps: list[str], ingredients: list[str]) -> str:
+    """Describe Thermomix settings and ingredient links per step (and what looks wrong)."""
+    instructions = build_instructions(steps, ingredients)
+    lines = describe_instructions(instructions, ingredients)
+    has_settings = any(
+        annotation["type"] == "TTS"
+        for instruction in instructions
+        for annotation in instruction.get("annotations", [])
+    )
+    if not has_settings:
+        lines.insert(
+            0,
+            "No Thermomix settings recognised. Write them like '3 Min./120°C/Stufe 1' or "
+            "'15 Min./100°C/Linkslauf/Sanftrührstufe' to enable guided cooking.",
+        )
+    return "Annotations (guided cooking and ingredient links):\n" + "\n".join(
+        f"  {line}" for line in lines
+    )
 
 
 @mcp.tool()
@@ -146,6 +180,20 @@ async def generate_recipe_structure(
     It validates all fields and returns a JSON structure that can be used with
     the upload_custom_recipe tool.
     
+    Thermomix settings: write them inside the step text in Cookidoo notation and
+    they are turned into real Thermomix settings (guided cooking) on upload:
+        "4 Sek./Stufe 5"                 time/speed
+        "3 Min./120°C/Stufe 1"           time/temperature/speed
+        "15 Min./100°C/Linkslauf/Stufe 1"  counter-clockwise (reverse) stirring
+        "12 Min./100°C/Linkslauf/Sanftrührstufe"  soft stir (Sanftrührstufe)
+        "1 Min. 30 Sek./Stufe 0,5"       minutes and seconds, half speed
+    Varoma, dough mode and turbo are not supported (kept as plain text).
+
+    Ingredient links: if a step contains an ingredient line verbatim (exactly as it
+    appears in the ingredients list, e.g. "1 Zwiebel"), that text becomes a link to the
+    ingredient in Cookidoo. So write steps like "1 Zwiebel und 1 Knoblauchzehe in den
+    Mixtopf geben" using the ingredient lines word for word.
+
     Args:
         name: Recipe name (required)
         ingredients: Ingredients list, one per line or comma-separated
@@ -166,12 +214,8 @@ async def generate_recipe_structure(
             if ing.strip()
         ]
         
-        # Parse steps (split by newlines or numbered steps)
-        steps_list = [
-            step.strip().lstrip('0123456789.)-• ')
-            for step in steps.split('\n')
-            if step.strip()
-        ]
+        # Parse steps (split by newlines, strip list markers like "1." or "-")
+        steps_list = _parse_steps(steps)
         
         # Parse hints if provided
         hints_list = None
@@ -196,7 +240,9 @@ async def generate_recipe_structure(
         # Return formatted JSON
         recipe_json = recipe.model_dump_json(indent=2)
         
-        return f"Recipe structure validated successfully!\n\n{recipe_json}\n\nYou can now use this with 'upload_custom_recipe'."
+        settings_report = _format_settings_report(recipe.steps, recipe.ingredients)
+
+        return f"Recipe structure validated successfully!\n\n{recipe_json}\n\n{settings_report}\n\nYou can now use this with 'upload_custom_recipe'."
         
     except Exception as e:
         return f"Validation failed: {str(e)}\n\nPlease check your recipe data and try again."
@@ -210,7 +256,11 @@ async def upload_custom_recipe(recipe_json: str) -> str:
     This tool creates a brand new recipe from scratch on your Cookidoo account.
     Use 'generate_recipe_structure' first to validate your recipe data, then
     pass the resulting JSON to this tool.
-    
+
+    Thermomix settings written in the step texts (e.g. "3 Min./120°C/Stufe 1") are
+    uploaded as real Thermomix settings, and ingredient lines that appear verbatim in a
+    step are uploaded as ingredient links, so no manual editing in Cookidoo is needed.
+
     Args:
         recipe_json: The validated recipe JSON from generate_recipe_structure
         
@@ -248,7 +298,64 @@ async def upload_custom_recipe(recipe_json: str) -> str:
         localization = _cookidoo_api.localization
         recipe_url = f"https://{localization.url}/recipes/custom-recipes/{recipe_id}"
         
-        return f"Recipe '{recipe.name}' created successfully!\n\nRecipe ID: {recipe_id}\nURL: {recipe_url}\n\nYour recipe is now saved in your Cookidoo account!"
-        
+        settings_report = _format_settings_report(recipe.steps, recipe.ingredients)
+
+        return f"Recipe '{recipe.name}' created successfully!\n\nRecipe ID: {recipe_id}\nURL: {recipe_url}\n\n{settings_report}\n\nYour recipe is now saved in your Cookidoo account!"
+
     except Exception as e:
         return f"Upload failed: {str(e)}"
+
+
+@mcp.tool()
+async def update_custom_recipe_steps(
+    recipe_id: str, steps: str, ingredients: str = ""
+) -> str:
+    """
+    Replace the steps of an existing custom recipe, including Thermomix settings and
+    ingredient links.
+
+    Use this to fix or add Thermomix settings (time, temperature, speed, reverse, soft
+    stir) and ingredient links on a recipe that was already uploaded. Only the steps are
+    changed; ingredients, times and hints stay as they are. You must be connected first
+    using connect_to_cookidoo.
+
+    Write the settings inside the step text in Cookidoo notation, for example
+    "3 Min./120°C/Stufe 1" or "12 Min./100°C/Linkslauf/Sanftrührstufe" (see
+    generate_recipe_structure for all forms). Ingredient lines that appear verbatim in
+    a step become links.
+
+    Args:
+        recipe_id: ID of your custom recipe (e.g., "01M5A79NY53CEKEW6NKVYBFSTW")
+        steps: ALL steps of the recipe, one per line. This replaces the existing steps.
+        ingredients: Optional ingredient lines to link, one per line. If empty, the
+            recipe's current ingredients are loaded from Cookidoo.
+
+    Returns:
+        str: Success message listing the Thermomix settings and ingredient links set
+    """
+    global _cookidoo_service, _cookidoo_api
+
+    try:
+        if not _cookidoo_service or not _cookidoo_api:
+            return "Not connected. Please run 'connect_to_cookidoo' first."
+
+        steps_list = _parse_steps(steps)
+        if not steps_list:
+            return "No steps given. Pass all steps of the recipe, one per line."
+
+        given_ingredients = [
+            line.strip() for line in ingredients.split("\n") if line.strip()
+        ] or None
+
+        ingredient_lines, note = await _cookidoo_service.update_recipe_steps(
+            recipe_id, steps_list, given_ingredients
+        )
+
+        settings_report = _format_settings_report(steps_list, ingredient_lines)
+        result = f"Steps of recipe {recipe_id} updated ({len(steps_list)} steps).\n\n{settings_report}"
+        if note:
+            result += f"\n\n{note}"
+        return result
+
+    except Exception as e:
+        return f"Update failed: {str(e)}"
